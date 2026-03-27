@@ -2,7 +2,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
-from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, ForeignKey, Text, Boolean, func
+from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, ForeignKey, Text, Boolean, func, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import datetime, timedelta
@@ -31,9 +31,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database setup
+# Database setup - Use separate schema to avoid conflicts
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost/farmfuzion_public")
-engine = create_engine(DATABASE_URL)
+SCHEMA_NAME = os.getenv("SCHEMA_NAME", "public_marketplace")
+
+# Create engine with schema search path
+engine = create_engine(DATABASE_URL, connect_args={
+    'options': f'-c search_path={SCHEMA_NAME},public'
+})
+
+# Create schema if it doesn't exist
+def create_schema():
+    with engine.connect() as conn:
+        conn.execute(f'CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}')
+        conn.commit()
+
+create_schema()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -53,11 +67,16 @@ def get_db():
     finally:
         db.close()
 
+# Set the schema for all tables
+class SchemaBase(Base):
+    __abstract__ = True
+    __table_args__ = {'schema': SCHEMA_NAME}
+
 # ============================================
 # Database Models
 # ============================================
 
-class Cooperative(Base):
+class Cooperative(SchemaBase):
     __tablename__ = "cooperatives"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -72,11 +91,11 @@ class Cooperative(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-class CooperativeProduct(Base):
+class CooperativeProduct(SchemaBase):
     __tablename__ = "cooperative_products"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    cooperative_id = Column(String, ForeignKey("cooperatives.id"))
+    cooperative_id = Column(String, ForeignKey(f"{SCHEMA_NAME}.cooperatives.id"))
     product_name = Column(String, nullable=False)
     category = Column(String)
     quantity = Column(Float, nullable=False)
@@ -95,11 +114,11 @@ class CooperativeProduct(Base):
     
     cooperative = relationship("Cooperative")
 
-class BulkOrder(Base):
+class BulkOrder(SchemaBase):
     __tablename__ = "bulk_orders"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    cooperative_product_id = Column(String, ForeignKey("cooperative_products.id"))
+    cooperative_product_id = Column(String, ForeignKey(f"{SCHEMA_NAME}.cooperative_products.id"))
     buyer_name = Column(String, nullable=False)
     buyer_company = Column(String, nullable=True)
     buyer_email = Column(String, nullable=False)
@@ -116,7 +135,7 @@ class BulkOrder(Base):
     
     product = relationship("CooperativeProduct")
 
-class Tender(Base):
+class Tender(SchemaBase):
     __tablename__ = "tenders"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -133,12 +152,12 @@ class Tender(Base):
     status = Column(String, default="open")
     created_at = Column(DateTime, default=datetime.utcnow)
 
-class TenderResponse(Base):
+class TenderResponse(SchemaBase):
     __tablename__ = "tender_responses"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    tender_id = Column(String, ForeignKey("tenders.id"))
-    cooperative_id = Column(String, ForeignKey("cooperatives.id"))
+    tender_id = Column(String, ForeignKey(f"{SCHEMA_NAME}.tenders.id"))
+    cooperative_id = Column(String, ForeignKey(f"{SCHEMA_NAME}.cooperatives.id"))
     offered_price = Column(Float, nullable=False)
     available_quantity = Column(Float, nullable=False)
     delivery_timeline = Column(Integer, nullable=False)
@@ -150,7 +169,7 @@ class TenderResponse(Base):
     cooperative = relationship("Cooperative")
 
 # ============================================
-# Pydantic Schemas
+# Pydantic Schemas (same as before)
 # ============================================
 
 class CooperativeProductCreate(BaseModel):
@@ -207,7 +226,7 @@ class TenderCreate(BaseModel):
     buyer_email: str
     buyer_phone: Optional[str] = None
 
-class TenderResponse(BaseModel):
+class TenderResponseCreate(BaseModel):
     tender_id: str
     offered_price: float
     available_quantity: float
@@ -215,19 +234,19 @@ class TenderResponse(BaseModel):
     message: Optional[str] = None
 
 # ============================================
-# API Endpoints
+# API Endpoints (same as before)
 # ============================================
 
 @app.get("/", tags=["Health"])
 def health_check():
-    return {"status": "healthy", "service": "FarmFuzion Global Marketplace API", "version": "1.0.0"}
+    return {"status": "healthy", "service": "FarmFuzion Global Marketplace API", "version": "1.0.0", "schema": SCHEMA_NAME}
 
 @app.get("/api/v1/products", response_model=List[CooperativeProductResponse], tags=["Products"])
 def list_products(
     category: Optional[str] = Query(None, description="Filter by category"),
     min_price: Optional[float] = Query(None, description="Minimum price"),
     max_price: Optional[float] = Query(None, description="Maximum price"),
-    certification: Optional[str] = Query(None, description="Filter by certification (organic, fair-trade)"),
+    certification: Optional[str] = Query(None, description="Filter by certification"),
     search: Optional[str] = Query(None, description="Search by product name"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -249,7 +268,6 @@ def list_products(
     
     products = query.offset(offset).limit(limit).all()
     
-    # Calculate total_price for each product
     for product in products:
         product.total_price = product.quantity * product.price_per_unit
     
@@ -274,7 +292,6 @@ def list_categories(db: Session = Depends(get_db)):
 @app.post("/api/v1/orders", response_model=BulkOrderResponse, tags=["Orders"])
 def create_bulk_order(order: BulkOrderCreate, db: Session = Depends(get_db)):
     """Create a bulk purchase order"""
-    # Verify product exists and is available
     product = db.query(CooperativeProduct).filter(
         CooperativeProduct.id == order.product_id,
         CooperativeProduct.available == True
@@ -286,10 +303,8 @@ def create_bulk_order(order: BulkOrderCreate, db: Session = Depends(get_db)):
     if order.quantity > product.quantity:
         raise HTTPException(status_code=400, detail="Insufficient quantity available")
     
-    # Calculate total amount
     total_amount = product.price_per_unit * order.quantity
     
-    # Create order
     db_order = BulkOrder(
         id=f"BO-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{order.product_id[:8]}",
         cooperative_product_id=order.product_id,
@@ -310,7 +325,6 @@ def create_bulk_order(order: BulkOrderCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_order)
     
-    # Add product_name for response
     setattr(db_order, "product_name", product.product_name)
     
     return db_order
@@ -335,12 +349,11 @@ def list_open_tenders(
 @app.post("/api/v1/tenders/{tender_id}/respond", tags=["Tenders"])
 def respond_to_tender(
     tender_id: str,
-    response: TenderResponse,
+    response: TenderResponseCreate,
     api_key: str = Depends(verify_api_key),
     db: Session = Depends(get_db)
 ):
     """Submit a response to a tender (requires API key)"""
-    # Verify tender exists and is open
     tender = db.query(Tender).filter(
         Tender.id == tender_id,
         Tender.status == "open",
@@ -350,12 +363,10 @@ def respond_to_tender(
     if not tender:
         raise HTTPException(status_code=404, detail="Tender not found or closed")
     
-    # Verify cooperative exists
     cooperative = db.query(Cooperative).filter(Cooperative.id == response.cooperative_id).first()
     if not cooperative:
         raise HTTPException(status_code=404, detail="Cooperative not found")
     
-    # Create response
     db_response = TenderResponse(
         tender_id=tender_id,
         cooperative_id=response.cooperative_id,
@@ -379,7 +390,6 @@ def get_marketplace_stats(db: Session = Depends(get_db)):
     total_cooperatives = db.query(Cooperative).filter(Cooperative.status == "active").count()
     total_orders = db.query(BulkOrder).count()
     
-    # Get product categories count
     categories = db.query(CooperativeProduct.category, func.count()).group_by(CooperativeProduct.category).all()
     
     return {

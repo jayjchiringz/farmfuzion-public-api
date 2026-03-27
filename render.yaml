@@ -12,7 +12,7 @@ services:
         value: 3.11.9
       - key: DATABASE_URL
         fromDatabase:
-          name: farmfuzion_public_db
+          name: postxpress-db
           property: connectionString
       - key: PUBLIC_API_KEY
         generateValue: true
@@ -20,9 +20,5 @@ services:
         value: "https://farm-fuzion-frontend-vercel.vercel.app,https://farm-fuzion-backend.onrender.com,https://farmfuzion-public-api.onrender.com,http://localhost:3000,http://localhost:5173"
       - key: ENVIRONMENT
         value: "production"
-
-databases:
-  - name: farmfuzion_public_db
-    databaseName: farmfuzion_public
-    user: farmfuzion_public_user
-    plan: free
+      - key: SCHEMA_NAME
+        value: "public_marketplace"
