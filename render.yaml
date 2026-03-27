@@ -1,0 +1,28 @@
+# render.yaml - FarmFuzion Global Marketplace Public API
+services:
+  - type: web
+    name: farmfuzion-public-api
+    runtime: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        fromDatabase:
+          name: farmfuzion_public_db
+          property: connectionString
+      - key: PUBLIC_API_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: "https://farm-fuzion-frontend-vercel.vercel.app,https://farm-fuzion-backend.onrender.com,https://farmfuzion-public-api.onrender.com,http://localhost:3000,http://localhost:5173"
+      - key: ENVIRONMENT
+        value: "production"
+
+databases:
+  - name: farmfuzion_public_db
+    databaseName: farmfuzion_public
+    user: farmfuzion_public_user
+    plan: free
