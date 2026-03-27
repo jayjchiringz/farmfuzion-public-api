@@ -2,7 +2,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
-from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, Text, Boolean, func
+from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, Text, Boolean, func, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from datetime import datetime
@@ -34,6 +34,10 @@ SCHEMA_NAME = os.getenv("SCHEMA_NAME", "public_marketplace")
 
 # Database session placeholder
 db_session = None
+engine = None
+SessionLocal = None
+Base = None
+MarketplaceProduct = None
 
 if DATABASE_URL:
     try:
@@ -42,9 +46,9 @@ if DATABASE_URL:
             'options': f'-c search_path={SCHEMA_NAME},public'
         })
         
-        # Create schema if it doesn't exist
+        # Create schema if it doesn't exist - FIX: Use text() wrapper
         with engine.connect() as conn:
-            conn.execute(f'CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}')
+            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}'))
             conn.commit()
         
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -73,7 +77,7 @@ if DATABASE_URL:
             finally:
                 db.close()
         
-        print(f"✅ Database connected. Schema: {SCHEMA_NAME}")
+        print(f"✅ Database connected successfully. Schema: {SCHEMA_NAME}")
         
     except Exception as e:
         print(f"⚠️ Database connection error: {e}")
@@ -99,11 +103,11 @@ def verify_api_key(api_key: str = Depends(api_key_header)):
 # Pydantic Schemas
 # ============================================
 class ProductCreate(BaseModel):
-    product_name: str
-    category: Optional[str] = None
-    quantity: float = 0
-    unit: str = "kg"
-    price_per_unit: float = 0
+    product_name: str = Field(..., description="Name of the product")
+    category: Optional[str] = Field(None, description="Product category")
+    quantity: float = Field(0, description="Available quantity", ge=0)
+    unit: str = Field("kg", description="Unit of measurement")
+    price_per_unit: float = Field(0, description="Price per unit", ge=0)
 
 class ProductResponse(ProductCreate):
     id: str
@@ -123,7 +127,7 @@ def health_check():
         "status": "healthy",
         "service": "FarmFuzion Global Marketplace API",
         "version": "1.0.0",
-        "database_connected": bool(DATABASE_URL and DATABASE_URL != ""),
+        "database_connected": bool(DATABASE_URL and engine is not None),
         "schema": SCHEMA_NAME if DATABASE_URL else None,
         "plan": "free"
     }
@@ -132,15 +136,18 @@ def health_check():
 def api_health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
-@app.get("/api/v1/products", tags=["Products"])
+@app.get("/api/v1/products", response_model=dict, tags=["Products"])
 def list_products(
-    category: Optional[str] = Query(None),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    min_price: Optional[float] = Query(None, description="Minimum price"),
+    max_price: Optional[float] = Query(None, description="Maximum price"),
+    search: Optional[str] = Query(None, description="Search by product name"),
+    limit: int = Query(50, ge=1, le=200, description="Items per page"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db)
 ):
     """List all available cooperative products"""
-    if not DATABASE_URL or not db:
+    if not DATABASE_URL or not db or MarketplaceProduct is None:
         return {
             "data": [],
             "total": 0,
@@ -154,9 +161,15 @@ def list_products(
         
         if category:
             query = query.filter(MarketplaceProduct.category == category)
+        if min_price:
+            query = query.filter(MarketplaceProduct.price_per_unit >= min_price)
+        if max_price:
+            query = query.filter(MarketplaceProduct.price_per_unit <= max_price)
+        if search:
+            query = query.filter(MarketplaceProduct.product_name.ilike(f"%{search}%"))
         
         total = query.count()
-        products = query.offset(offset).limit(limit).all()
+        products = query.order_by(MarketplaceProduct.created_at.desc()).offset(offset).limit(limit).all()
         
         return {
             "data": products,
@@ -172,14 +185,14 @@ def list_products(
             "message": "Database query failed"
         }
 
-@app.post("/api/v1/products", tags=["Products"])
+@app.post("/api/v1/products", response_model=ProductResponse, tags=["Products"])
 def create_product(
     product: ProductCreate,
     api_key: str = Depends(verify_api_key),
     db: Session = Depends(get_db)
 ):
     """Create a new product (requires API key)"""
-    if not DATABASE_URL or not db:
+    if not DATABASE_URL or not db or MarketplaceProduct is None:
         raise HTTPException(status_code=503, detail="Database not configured")
     
     try:
@@ -201,10 +214,75 @@ def create_product(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/v1/products/{product_id}", response_model=ProductResponse, tags=["Products"])
+def get_product(
+    product_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get a specific product by ID"""
+    if not DATABASE_URL or not db or MarketplaceProduct is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    product = db.query(MarketplaceProduct).filter(MarketplaceProduct.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    return product
+
+@app.patch("/api/v1/products/{product_id}", tags=["Products"])
+def update_product(
+    product_id: str,
+    updates: dict,
+    api_key: str = Depends(verify_api_key),
+    db: Session = Depends(get_db)
+):
+    """Update a product (requires API key)"""
+    if not DATABASE_URL or not db or MarketplaceProduct is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    product = db.query(MarketplaceProduct).filter(MarketplaceProduct.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    try:
+        for key, value in updates.items():
+            if hasattr(product, key):
+                setattr(product, key, value)
+        
+        db.commit()
+        db.refresh(product)
+        
+        return product
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/products/{product_id}", tags=["Products"])
+def delete_product(
+    product_id: str,
+    api_key: str = Depends(verify_api_key),
+    db: Session = Depends(get_db)
+):
+    """Delete a product (requires API key)"""
+    if not DATABASE_URL or not db or MarketplaceProduct is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    product = db.query(MarketplaceProduct).filter(MarketplaceProduct.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    try:
+        db.delete(product)
+        db.commit()
+        return {"message": "Product deleted successfully", "id": product_id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v1/categories", tags=["Products"])
 def list_categories(db: Session = Depends(get_db)):
     """List all available product categories"""
-    if not DATABASE_URL or not db:
+    if not DATABASE_URL or not db or MarketplaceProduct is None:
         return {"categories": []}
     
     try:
@@ -216,7 +294,7 @@ def list_categories(db: Session = Depends(get_db)):
 @app.get("/api/v1/stats", tags=["Stats"])
 def get_marketplace_stats(db: Session = Depends(get_db)):
     """Get marketplace statistics"""
-    if not DATABASE_URL or not db:
+    if not DATABASE_URL or not db or MarketplaceProduct is None:
         return {
             "total_products": 0,
             "total_cooperatives": 0,
@@ -234,12 +312,13 @@ def get_marketplace_stats(db: Session = Depends(get_db)):
             "total_orders": 0,
             "categories": [{"name": c[0], "count": c[1]} for c in categories if c[0]]
         }
-    except Exception:
+    except Exception as e:
         return {
             "total_products": 0,
             "total_cooperatives": 0,
             "total_orders": 0,
-            "categories": []
+            "categories": [],
+            "error": str(e)
         }
 
 if __name__ == "__main__":
