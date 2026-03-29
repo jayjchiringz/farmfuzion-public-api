@@ -136,12 +136,13 @@ def health_check():
 def api_health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
-@app.get("/api/v1/products", response_model=dict, tags=["Products"])
+@app.get("/api/v1/products", tags=["Products"])
 def list_products(
     category: Optional[str] = Query(None, description="Filter by category"),
     min_price: Optional[float] = Query(None, description="Minimum price"),
     max_price: Optional[float] = Query(None, description="Maximum price"),
     search: Optional[str] = Query(None, description="Search by product name"),
+    sort: str = Query("newest", description="Sort order: newest, price_asc, price_desc"),
     limit: int = Query(50, ge=1, le=200, description="Items per page"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     db: Session = Depends(get_db)
@@ -168,19 +169,50 @@ def list_products(
         if search:
             query = query.filter(MarketplaceProduct.product_name.ilike(f"%{search}%"))
         
+        # Apply sorting
+        if sort == "price_asc":
+            query = query.order_by(MarketplaceProduct.price_per_unit.asc())
+        elif sort == "price_desc":
+            query = query.order_by(MarketplaceProduct.price_per_unit.desc())
+        else:  # newest
+            query = query.order_by(MarketplaceProduct.created_at.desc())
+        
         total = query.count()
-        products = query.order_by(MarketplaceProduct.created_at.desc()).offset(offset).limit(limit).all()
+        products = query.offset(offset).limit(limit).all()
+        
+        # Convert SQLAlchemy objects to dictionaries (this is the key fix!)
+        products_data = []
+        for p in products:
+            products_data.append({
+                "id": p.id,
+                "product_name": p.product_name,
+                "category": p.category,
+                "quantity": p.quantity,
+                "unit": p.unit,
+                "price_per_unit": p.price_per_unit,
+                "currency": "KES",
+                "total_price": p.quantity * p.price_per_unit,
+                "available": p.available,
+                "certification": None,
+                "description": None,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "cooperative_name": None,
+                "source_farmer_name": None
+            })
         
         return {
-            "data": products,
+            "data": products_data,
             "total": total,
             "limit": limit,
             "offset": offset
         }
     except Exception as e:
+        print(f"Error in list_products: {e}")
         return {
             "data": [],
             "total": 0,
+            "limit": limit,
+            "offset": offset,
             "error": str(e),
             "message": "Database query failed"
         }
@@ -214,7 +246,7 @@ def create_product(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/products/{product_id}", response_model=ProductResponse, tags=["Products"])
+@app.get("/api/v1/products/{product_id}", tags=["Products"])
 def get_product(
     product_id: str,
     db: Session = Depends(get_db)
@@ -227,7 +259,23 @@ def get_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    return product
+    # Convert SQLAlchemy object to dictionary
+    return {
+        "id": product.id,
+        "product_name": product.product_name,
+        "category": product.category,
+        "quantity": product.quantity,
+        "unit": product.unit,
+        "price_per_unit": product.price_per_unit,
+        "currency": "KES",
+        "total_price": product.quantity * product.price_per_unit,
+        "available": product.available,
+        "certification": None,
+        "description": None,
+        "created_at": product.created_at.isoformat() if product.created_at else None,
+        "cooperative_name": None,
+        "source_farmer_name": None
+    }
 
 @app.patch("/api/v1/products/{product_id}", tags=["Products"])
 def update_product(
