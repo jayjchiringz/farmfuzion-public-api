@@ -357,6 +357,104 @@ def delete_product(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============================================
+# Order Schemas
+# ============================================
+class OrderCreate(BaseModel):
+    product_id: str = Field(..., description="Product ID to order")
+    buyer_name: str = Field(..., description="Full name of buyer")
+    buyer_company: Optional[str] = Field(None, description="Company name")
+    buyer_email: str = Field(..., description="Email address")
+    buyer_phone: Optional[str] = Field(None, description="Phone number")
+    buyer_country: str = Field("Kenya", description="Country")
+    quantity: float = Field(..., description="Quantity to order", ge=1)
+    shipping_address: Optional[str] = Field(None, description="Shipping address")
+    notes: Optional[str] = Field(None, description="Order notes")
+
+class OrderResponse(BaseModel):
+    id: str
+    product_id: str
+    product_name: str
+    buyer_name: str
+    buyer_company: Optional[str]
+    buyer_email: str
+    buyer_phone: Optional[str]
+    buyer_country: str
+    quantity: float
+    unit: str
+    price_per_unit: float
+    total_amount: float
+    status: str
+    created_at: datetime
+
+# ============================================
+# Orders Endpoint
+# ============================================
+@app.post("/api/v1/orders", tags=["Orders"])
+def create_order(
+    order: OrderCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a bulk order for a product"""
+    if not DATABASE_URL or not db or MarketplaceProduct is None:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    
+    try:
+        # Get the product
+        product = db.query(MarketplaceProduct).filter(
+            MarketplaceProduct.id == order.product_id,
+            MarketplaceProduct.available == True
+        ).first()
+        
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found or unavailable")
+        
+        if order.quantity > product.quantity:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Not enough stock. Available: {product.quantity} {product.unit}"
+            )
+        
+        # Calculate total
+        total_amount = order.quantity * product.price_per_unit
+        
+        # Generate order ID
+        order_id = str(uuid.uuid4())
+        
+        # For now, just log the order and return success
+        # In production, you'd save to a database table
+        print(f"📦 New Order: {order_id}")
+        print(f"   Product: {product.product_name}")
+        print(f"   Buyer: {order.buyer_name} ({order.buyer_email})")
+        print(f"   Quantity: {order.quantity} {product.unit}")
+        print(f"   Total: {total_amount} KES")
+        
+        # TODO: Save order to database
+        # For now, store in memory or create orders table
+        
+        return {
+            "id": order_id,
+            "product_id": product.id,
+            "product_name": product.product_name,
+            "buyer_name": order.buyer_name,
+            "buyer_company": order.buyer_company,
+            "buyer_email": order.buyer_email,
+            "buyer_phone": order.buyer_phone,
+            "buyer_country": order.buyer_country,
+            "quantity": order.quantity,
+            "unit": product.unit,
+            "price_per_unit": product.price_per_unit,
+            "total_amount": total_amount,
+            "status": "pending",
+            "created_at": datetime.utcnow()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Order creation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v1/categories", tags=["Products"])
 def list_categories(db: Session = Depends(get_db)):
     """List all available product categories"""
