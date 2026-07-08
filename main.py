@@ -27,13 +27,21 @@ app.add_middleware(
 )
 
 # ============================================
-# Database Setup - Graceful handling
+# Database Setup - Neon Compatible
 # ============================================
 DATABASE_URL = os.getenv("DATABASE_URL")
 SCHEMA_NAME = os.getenv("SCHEMA_NAME", "public_marketplace")
 
+# ✅ FIX: Ensure SSL for Neon
+if DATABASE_URL and "neon.tech" in DATABASE_URL:
+    if "sslmode" not in DATABASE_URL:
+        if "?" in DATABASE_URL:
+            DATABASE_URL += "&sslmode=require"
+        else:
+            DATABASE_URL += "?sslmode=require"
+    print("✅ Neon database detected - SSL enabled")
+
 # Database session placeholder
-db_session = None
 engine = None
 SessionLocal = None
 Base = None
@@ -41,20 +49,45 @@ MarketplaceProduct = None
 
 if DATABASE_URL:
     try:
-        # Create engine with schema search path
-        engine = create_engine(DATABASE_URL, connect_args={
-            'options': f'-c search_path={SCHEMA_NAME},public'
-        })
+        print(f"📊 Connecting to database...")
         
-        # Create schema if it doesn't exist - FIX: Use text() wrapper
+        # ✅ Create engine with schema support and SSL
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={
+                'options': f'-c search_path={SCHEMA_NAME},public',
+                'sslmode': 'require' if 'neon.tech' in DATABASE_URL else 'prefer'
+            }
+        )
+        
+        # Test connection and create schema
         with engine.connect() as conn:
+            # Create schema if it doesn't exist
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}'))
             conn.commit()
+            print(f"✅ Schema '{SCHEMA_NAME}' verified")
+            
+            # ✅ Create table if it doesn't exist (auto-setup)
+            create_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA_NAME}.marketplace_products (
+                id VARCHAR PRIMARY KEY,
+                product_name VARCHAR NOT NULL,
+                category VARCHAR,
+                quantity FLOAT DEFAULT 0,
+                unit VARCHAR DEFAULT 'kg',
+                price_per_unit FLOAT DEFAULT 0,
+                available BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            conn.execute(text(create_table_sql))
+            conn.commit()
+            print(f"✅ Table 'marketplace_products' verified")
         
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base = declarative_base()
         
-        # Simple model for testing
+        # Define model
         class MarketplaceProduct(Base):
             __tablename__ = "marketplace_products"
             __table_args__ = {'schema': SCHEMA_NAME}
@@ -66,9 +99,6 @@ if DATABASE_URL:
             price_per_unit = Column(Float, default=0)
             available = Column(Boolean, default=True)
             created_at = Column(DateTime, default=datetime.utcnow)
-        
-        # Create tables
-        Base.metadata.create_all(bind=engine)
         
         def get_db():
             db = SessionLocal()
