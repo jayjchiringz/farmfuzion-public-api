@@ -27,12 +27,12 @@ app.add_middleware(
 )
 
 # ============================================
-# Database Setup - Neon Compatible
+# Database Setup - Neon Compatible (FIXED)
 # ============================================
 DATABASE_URL = os.getenv("DATABASE_URL")
 SCHEMA_NAME = os.getenv("SCHEMA_NAME", "public_marketplace")
 
-# ✅ FIX: Ensure SSL for Neon
+# Fix Neon SSL
 if DATABASE_URL and "neon.tech" in DATABASE_URL:
     if "sslmode" not in DATABASE_URL:
         if "?" in DATABASE_URL:
@@ -49,25 +49,30 @@ MarketplaceProduct = None
 
 if DATABASE_URL:
     try:
-        print(f"📊 Connecting to database...")
+        print(f"📊 Connecting to database: {DATABASE_URL[:50]}...")
         
-        # ✅ Create engine with schema support and SSL
+        # ✅ REMOVE 'options' parameter - Neon pooler doesn't support it
         engine = create_engine(
             DATABASE_URL,
             connect_args={
-                'options': f'-c search_path={SCHEMA_NAME},public',
                 'sslmode': 'require' if 'neon.tech' in DATABASE_URL else 'prefer'
             }
         )
         
-        # Test connection and create schema
+        # Test connection and setup
         with engine.connect() as conn:
+            print("✅ Database connection successful")
+            
+            # ✅ Set search_path manually
+            conn.execute(text(f'SET search_path TO {SCHEMA_NAME}, public'))
+            conn.commit()
+            
             # Create schema if it doesn't exist
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}'))
             conn.commit()
             print(f"✅ Schema '{SCHEMA_NAME}' verified")
             
-            # ✅ Create table if it doesn't exist (auto-setup)
+            # Create table if it doesn't exist
             create_table_sql = f"""
             CREATE TABLE IF NOT EXISTS {SCHEMA_NAME}.marketplace_products (
                 id VARCHAR PRIMARY KEY,
@@ -83,6 +88,14 @@ if DATABASE_URL:
             conn.execute(text(create_table_sql))
             conn.commit()
             print(f"✅ Table 'marketplace_products' verified")
+            
+            # Check if there are any products
+            count_result = conn.execute(text(f'SELECT COUNT(*) FROM {SCHEMA_NAME}.marketplace_products'))
+            count = count_result.scalar()
+            print(f"📊 Products in database: {count}")
+            
+            if count == 0:
+                print("⚠️ No products found. Run setup_public_schema.py to add sample data.")
         
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base = declarative_base()
@@ -103,6 +116,9 @@ if DATABASE_URL:
         def get_db():
             db = SessionLocal()
             try:
+                # ✅ Ensure search_path is set for each session
+                db.execute(text(f'SET search_path TO {SCHEMA_NAME}, public'))
+                db.commit()
                 yield db
             finally:
                 db.close()
@@ -111,6 +127,8 @@ if DATABASE_URL:
         
     except Exception as e:
         print(f"⚠️ Database connection error: {e}")
+        import traceback
+        traceback.print_exc()
         def get_db():
             yield None
 else:
