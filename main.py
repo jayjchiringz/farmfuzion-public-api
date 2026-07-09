@@ -116,9 +116,7 @@ if DATABASE_URL:
         def get_db():
             db = SessionLocal()
             try:
-                # ✅ Ensure search_path is set for each session
-                db.execute(text(f'SET search_path TO {SCHEMA_NAME}, public'))
-                db.commit()
+                # ✅ REMOVE the SET search_path - model has schema in __table_args__
                 yield db
             finally:
                 db.close()
