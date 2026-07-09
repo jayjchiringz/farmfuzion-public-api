@@ -51,7 +51,7 @@ if DATABASE_URL:
     try:
         print(f"📊 Connecting to database: {DATABASE_URL[:50]}...")
         
-        # ✅ REMOVE 'options' parameter - Neon pooler doesn't support it
+        # ✅ Create engine WITHOUT search_path
         engine = create_engine(
             DATABASE_URL,
             connect_args={
@@ -63,9 +63,9 @@ if DATABASE_URL:
         with engine.connect() as conn:
             print("✅ Database connection successful")
             
-            # ✅ Set search_path manually
-            conn.execute(text(f'SET search_path TO {SCHEMA_NAME}, public'))
-            conn.commit()
+            # ✅ REMOVE this - it causes SSL error on Neon!
+            # conn.execute(text(f'SET search_path TO {SCHEMA_NAME}, public'))
+            # conn.commit()
             
             # Create schema if it doesn't exist
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}'))
@@ -95,12 +95,12 @@ if DATABASE_URL:
             print(f"📊 Products in database: {count}")
             
             if count == 0:
-                print("⚠️ No products found. Run setup_public_schema.py to add sample data.")
+                print("⚠️ No products found. Use the Group Admin Dashboard to add products.")
         
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base = declarative_base()
         
-        # Define model
+        # Define model with explicit schema
         class MarketplaceProduct(Base):
             __tablename__ = "marketplace_products"
             __table_args__ = {'schema': SCHEMA_NAME}
@@ -116,7 +116,7 @@ if DATABASE_URL:
         def get_db():
             db = SessionLocal()
             try:
-                # ✅ REMOVE the SET search_path - model has schema in __table_args__
+                # ✅ No search_path needed - model has schema in __table_args__
                 yield db
             finally:
                 db.close()
