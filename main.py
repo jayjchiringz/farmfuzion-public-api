@@ -485,33 +485,157 @@ def list_categories(db: Session = Depends(get_db)):
 
 @app.get("/api/v1/stats", tags=["Stats"])
 def get_marketplace_stats(db: Session = Depends(get_db)):
-    """Get marketplace statistics"""
-    if not DATABASE_URL or not db or MarketplaceProduct is None:
+    """Get marketplace statistics (real network counts)"""
+    if not DATABASE_URL or not db:
         return {
             "total_products": 0,
             "total_cooperatives": 0,
-            "total_orders": 0,
-            "categories": []
-        }
-    
-    try:
-        total_products = db.query(MarketplaceProduct).filter(MarketplaceProduct.available == True).count()
-        categories = db.query(MarketplaceProduct.category, func.count()).group_by(MarketplaceProduct.category).all()
-        
-        return {
-            "total_products": total_products,
-            "total_cooperatives": 0,
-            "total_orders": 0,
-            "categories": [{"name": c[0], "count": c[1]} for c in categories if c[0]]
-        }
-    except Exception as e:
-        return {
-            "total_products": 0,
-            "total_cooperatives": 0,
+            "total_farmers": 0,
+            "active_farmers": 0,
+            "counties_reached": 0,
             "total_orders": 0,
             "categories": [],
-            "error": str(e)
         }
+
+    try:
+        # --- Marketplace product stats (from public_marketplace schema) ---
+        total_products = 0
+        categories_rows = []
+        if MarketplaceProduct is not None:
+            total_products = (
+                db.query(MarketplaceProduct)
+                .filter(MarketplaceProduct.available == True)
+                .count()
+            )
+            categories_rows = (
+                db.query(MarketplaceProduct.category, func.count())
+                .group_by(MarketplaceProduct.category)
+                .all()
+            )
+
+        # --- Network stats from the public schema (raw SQL) ---
+        network = db.execute(
+            text("""
+                SELECT
+                  (SELECT COUNT(*)::int
+                     FROM public.groups
+                    WHERE status = 'active')                           AS total_cooperatives,
+                  (SELECT COUNT(*)::int
+                     FROM public.farmers)                              AS total_farmers,
+                  (SELECT COUNT(*)::int
+                     FROM public.farmers
+                    WHERE group_id IS NOT NULL)                        AS active_farmers,
+                  (SELECT COUNT(DISTINCT LOWER(TRIM(county)))::int
+                     FROM public.groups
+                    WHERE status = 'active'
+                      AND county IS NOT NULL
+                      AND TRIM(county) <> '')                          AS counties_reached,
+                  (SELECT COUNT(*)::int
+                     FROM public.bulk_orders)                          AS total_orders
+            """)
+        ).mappings().first()
+
+        network = network or {}
+
+        return {
+            "total_products": total_products,
+            "total_cooperatives": network.get("total_cooperatives", 0),
+            "total_farmers": network.get("total_farmers", 0),
+            "active_farmers": network.get("active_farmers", 0),
+            "counties_reached": network.get("counties_reached", 0),
+            "total_orders": network.get("total_orders", 0),
+            "categories": [
+                {"name": c[0], "count": c[1]} for c in categories_rows if c[0]
+            ],
+        }
+    except Exception as e:
+        print(f"❌ Stats error: {e}")
+        return {
+            "total_products": 0,
+            "total_cooperatives": 0,
+            "total_farmers": 0,
+            "active_farmers": 0,
+            "counties_reached": 0,
+            "total_orders": 0,
+            "categories": [],
+            "error": str(e),
+        }
+
+@app.get("/api/v1/counties", tags=["Stats"])
+def list_counties(db: Session = Depends(get_db)):
+    """Distribution of active groups by Kenyan county"""
+    if not DATABASE_URL or not db:
+        return {"data": [], "total_counties": 0, "total_groups": 0}
+
+    try:
+        rows = db.execute(
+            text("""
+                SELECT
+                  MIN(TRIM(county))                                  AS county,
+                  COUNT(*)::int                                      AS group_count,
+                  COUNT(*) FILTER (WHERE wallet_status = 'active')::int
+                                                                     AS active_wallets,
+                  COUNT(DISTINCT group_type_id)::int                 AS group_type_count
+                FROM public.groups
+                WHERE status = 'active'
+                  AND county IS NOT NULL
+                  AND TRIM(county) <> ''
+                GROUP BY LOWER(TRIM(county))
+                ORDER BY group_count DESC, county ASC
+            """)
+        ).mappings().all()
+
+        data = [dict(r) for r in rows]
+        return {
+            "data": data,
+            "total_counties": len(data),
+            "total_groups": sum(r["group_count"] for r in data),
+        }
+    except Exception as e:
+        print(f"❌ Counties error: {e}")
+        return {"data": [], "total_counties": 0, "total_groups": 0}
+
+@app.get("/api/v1/group-types", tags=["Stats"])
+def list_group_types(db: Session = Depends(get_db)):
+    """Distribution of active groups by group type"""
+    if not DATABASE_URL or not db:
+        return {"data": [], "total_groups": 0}
+
+    try:
+        rows = db.execute(
+            text("""
+                SELECT
+                  gt.id::text                                       AS id,
+                  gt.name                                           AS group_type,
+                  gt.is_active                                      AS type_active,
+                  COUNT(g.id)::int                                  AS group_count,
+                  COUNT(g.id) FILTER (WHERE g.wallet_status = 'active')::int
+                                                                    AS active_wallets
+                FROM public.group_types gt
+                LEFT JOIN public.groups g
+                  ON g.group_type_id = gt.id
+                 AND g.status = 'active'
+                WHERE gt.is_active = TRUE
+                GROUP BY gt.id, gt.name, gt.is_active
+                ORDER BY group_count DESC, gt.name ASC
+            """)
+        ).mappings().all()
+
+        data = [dict(r) for r in rows]
+        total_groups = sum(r["group_count"] for r in data)
+
+        # Add percentage to each row
+        for r in data:
+            r["percentage"] = (
+                round((r["group_count"] / total_groups) * 100)
+                if total_groups > 0
+                else 0
+            )
+
+        return {"data": data, "total_groups": total_groups}
+    except Exception as e:
+        print(f"❌ Group types error: {e}")
+        return {"data": [], "total_groups": 0}
 
 if __name__ == "__main__":
     import uvicorn
