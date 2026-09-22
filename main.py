@@ -10,9 +10,6 @@ from typing import Optional, List
 from pydantic import BaseModel, Field # pyright: ignore[reportMissingImports]
 import os
 import uuid
-import json
-import time
-import requests # pyright: ignore[reportMissingModuleSource]
 
 app = FastAPI(
     title="FarmFuzion Global Marketplace API",
