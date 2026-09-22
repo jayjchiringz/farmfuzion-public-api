@@ -1,15 +1,18 @@
 # farmfuzion-public-api/main.py
-from fastapi import FastAPI, HTTPException, Depends, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import APIKeyHeader
-from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, Text, Boolean, func, text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from fastapi import FastAPI, HTTPException, Depends, Query  # pyright: ignore[reportMissingImports]
+from fastapi.middleware.cors import CORSMiddleware # type: ignore
+from fastapi.security import APIKeyHeader # type: ignore
+from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, Text, Boolean, func, text # pyright: ignore[reportMissingImports]
+from sqlalchemy.ext.declarative import declarative_base # pyright: ignore[reportMissingImports]
+from sqlalchemy.orm import sessionmaker, Session # pyright: ignore[reportMissingImports]
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field # pyright: ignore[reportMissingImports]
 import os
 import uuid
+import json
+import time
+import requests # pyright: ignore[reportMissingModuleSource]
 
 app = FastAPI(
     title="FarmFuzion Global Marketplace API",
@@ -638,6 +641,8 @@ def list_group_types(db: Session = Depends(get_db)):
         return {"data": [], "total_groups": 0}
 
 if __name__ == "__main__":
-    import uvicorn
+    import importlib
+
+    uvicorn = importlib.import_module("uvicorn")
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
